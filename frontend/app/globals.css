@@ -1,0 +1,212 @@
+@import "tailwindcss";
+
+/* Instrument-panel palette: cool ground, white paper, navy ink, cobalt signal. */
+:root {
+  --ground: #e8ecf1;
+  --paper: #ffffff;
+  --ink: #16213a;
+  --ink-soft: #4a5672;
+  --ink-faint: #8b95aa;
+  --rule: #cfd6e0;
+  --signal: #2e47e6;
+  --signal-soft: #e3e7fd;
+  --verified: #0f7f64;
+  --rejected: #b4461b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #0e1424;
+    --paper: #151d31;
+    --ink: #e4e9f3;
+    --ink-soft: #a9b3c8;
+    --ink-faint: #6c7790;
+    --rule: #26314a;
+    --signal: #8394ff;
+    --signal-soft: #1f2a52;
+    --verified: #42c49c;
+    --rejected: #f08a5d;
+  }
+}
+
+@theme inline {
+  --color-ground: var(--ground);
+  --color-paper: var(--paper);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-faint: var(--ink-faint);
+  --color-rule: var(--rule);
+  --color-signal: var(--signal);
+  --color-signal-soft: var(--signal-soft);
+  --color-verified: var(--verified);
+  --color-rejected: var(--rejected);
+  --font-sans: var(--font-instrument);
+  --font-serif: var(--font-newsreader);
+}
+
+html {
+  background: var(--ground);
+  color: var(--ink);
+}
+
+body {
+  font-family: var(--font-instrument), system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ---------- Timeline track: a commit-graph that branches for parallel researchers ---------- */
+.track {
+  position: relative;
+  padding-left: 22px;
+}
+.track::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: var(--rule);
+}
+.node-dot {
+  position: absolute;
+  left: -22px;
+  top: 5px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--rule);
+  background: var(--ground);
+}
+.node-dot[data-state="done"] {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.node-dot[data-state="active"] {
+  border-color: var(--signal);
+  background: var(--signal-soft);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.node-dot[data-state="error"] {
+  background: var(--rejected);
+  border-color: var(--rejected);
+}
+/* Branches: each lane hangs off the trunk with an elbow connector. */
+.lanes {
+  position: relative;
+  margin-left: -16px;
+  padding-left: 16px;
+}
+.lane {
+  position: relative;
+  padding-left: 32px;
+}
+.lane::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: -10px;
+  width: 26px;
+  height: 22px;
+  border-left: 2px solid var(--signal);
+  border-bottom: 2px solid var(--signal);
+  border-bottom-left-radius: 10px;
+  opacity: 0.45;
+}
+.lane[data-state="done"]::before {
+  border-color: var(--ink-soft);
+}
+.lane-dot {
+  position: absolute;
+  left: 14px;
+  top: 7px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--signal);
+}
+.lane[data-state="done"] .lane-dot {
+  background: var(--ink-soft);
+}
+.lane[data-state="active"] .lane-dot {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--signal) 20%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .node-dot[data-state="active"],
+  .lane[data-state="active"] .lane-dot {
+    animation: none;
+  }
+}
+
+/* ---------- Report prose ---------- */
+.prose-brief {
+  font-family: var(--font-newsreader), Georgia, serif;
+  font-size: 18px;
+  line-height: 1.65;
+  color: var(--ink);
+}
+.prose-brief p,
+.prose-brief ul,
+.prose-brief ol {
+  margin: 0 0 0.9em;
+}
+.prose-brief ul {
+  list-style: disc;
+  padding-left: 1.2em;
+}
+.prose-brief ol {
+  list-style: decimal;
+  padding-left: 1.4em;
+}
+.prose-brief li {
+  margin-bottom: 0.35em;
+}
+.prose-brief strong {
+  font-weight: 600;
+}
+.prose-brief table {
+  font-family: var(--font-instrument), system-ui, sans-serif;
+  font-size: 14px;
+  border-collapse: collapse;
+  margin: 0.5em 0 1em;
+}
+.prose-brief th,
+.prose-brief td {
+  border-bottom: 1px solid var(--rule);
+  padding: 6px 10px 6px 0;
+  text-align: left;
+  vertical-align: top;
+}
+.cite {
+  font-family: var(--font-instrument), system-ui, sans-serif;
+  font-size: 0.68em;
+  font-weight: 600;
+  vertical-align: super;
+  line-height: 0;
+  color: var(--signal);
+  padding: 0 1px;
+  text-decoration: none;
+}
+.cite:hover {
+  text-decoration: underline;
+}
+/* [3][4] must read as "3,4", not "34" */
+.cite + .cite::before {
+  content: ",";
+  color: var(--ink-faint);
+  padding-right: 1px;
+}
