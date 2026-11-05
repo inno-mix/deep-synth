@@ -91,7 +91,7 @@ async def researcher(task: ResearchTask) -> dict:
             picked.append(r)
     emit(node, "progress", f"Reading {len(picked)} sources", urls=[r.url for r in picked])
 
-    async with httpx.AsyncClient(follow_redirects=True, headers=HEADERS, timeout=12) as client:
+    async with httpx.AsyncClient(follow_redirects=False, headers=HEADERS, timeout=12) as client:
         texts = await asyncio.gather(
             *(asyncio.sleep(0, r.content) if r.content else fetch_text(r.url, client) for r in picked)
         )

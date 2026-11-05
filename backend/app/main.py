@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
@@ -17,6 +18,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app import db, runner
 from app.config import get_settings
+from app.llm import StructuredOutputError
 from app.schemas import ResearchRequest, RunCreated, RunDetail, RunEvent, RunSummary
 from app.tracing import setup_tracing
 
@@ -42,14 +44,38 @@ app.add_middleware(
 
 # ------------------------------------------------------------- rate limit (per instance)
 _hits: dict[str, deque[float]] = defaultdict(deque)
+_MAX_TRACKED_IPS = 10_000
+WINDOW_S = 3600
+
+
+def client_ip(request: Request) -> str:
+    """Client IP for rate limiting.
+
+    Forwarding headers are client-controlled unless a trusted proxy overwrites them, so they are
+    read only when TRUST_PROXY_HEADERS is on (default on Vercel, which sets x-real-ip and
+    x-forwarded-for to the verified client address and discards client-supplied values).
+    """
+    if get_settings().trust_proxy_headers:
+        real = request.headers.get("x-real-ip") or request.headers.get("x-forwarded-for", "").split(",")[0]
+        if real.strip():
+            return real.strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _evict(now: float) -> None:
+    for key in [k for k, q in _hits.items() if not q or now - q[-1] > WINDOW_S]:
+        del _hits[key]
+    while len(_hits) >= _MAX_TRACKED_IPS:  # leave room for the key about to be added
+        del _hits[next(iter(_hits))]
 
 
 def _rate_limit(request: Request) -> None:
     limit = get_settings().rate_limit_per_hour
-    fwd = request.headers.get("x-forwarded-for")
-    ip = (fwd or (request.client.host if request.client else "?")).split(",")[0].strip()
-    q, now = _hits[ip], time.time()
-    while q and now - q[0] > 3600:
+    now = time.time()
+    if len(_hits) > _MAX_TRACKED_IPS // 2:
+        _evict(now)
+    q = _hits[client_ip(request)]
+    while q and now - q[0] > WINDOW_S:
         q.popleft()
     if len(q) >= limit:
         raise HTTPException(429, "Rate limit exceeded, try again later")
@@ -187,15 +213,26 @@ async def _execute(run: db.Run) -> None:
         _event(events, "system", "error", run.error)
         raise
     except Exception as e:
+        # Full details go to server logs only; users get a fixed message (no hosts, URLs or stack text).
         log.exception("run %s failed", run.id)
-        msg = "Ran out of time before the brief was written." if isinstance(e, TimeoutError) else str(e)
-        run.status, run.error = "error", f"{type(e).__name__}: {msg}"[:2000]
+        run.status, run.error = "error", public_error(e, run.id)
         _event(events, "system", "error", run.error)
     finally:
         hb.cancel()
         await asyncio.shield(flush())
         _tasks.pop(run.id, None)
         asyncio.get_running_loop().call_later(120, _live.pop, run.id, None)
+
+
+def public_error(e: BaseException, run_id: str) -> str:
+    """Map an internal exception to a fixed, user-safe message."""
+    if isinstance(e, TimeoutError):
+        return "Ran out of time before the brief was written. Try a narrower question."
+    if isinstance(e, StructuredOutputError):
+        return "The model kept returning output in the wrong format. Try again or use a larger model."
+    if isinstance(e, httpx.ConnectError | ConnectionError):
+        return "Couldn't reach the language model. Check that the model server is running."
+    return f"The run failed unexpectedly. Server logs have the details (run {run_id})."
 
 
 def _age_s(ts: datetime) -> float:

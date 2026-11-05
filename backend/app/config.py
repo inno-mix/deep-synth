@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./deep_synth.db"
     cors_origins: str = "http://localhost:3000"
     rate_limit_per_hour: int = 20
+    # Only trust X-Forwarded-For / X-Real-IP behind a proxy that overwrites them (Vercel does).
+    trust_proxy_headers: bool = Field(default_factory=lambda: bool(os.environ.get("VERCEL")))
 
     # --- Observability ---
     phoenix_collector_endpoint: str | None = None
