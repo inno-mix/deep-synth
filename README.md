@@ -80,6 +80,18 @@ The graph and API tests swap in a scripted fake LLM and fake search, so they run
 
 `make phoenix` starts Arize Phoenix locally. Set `PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006` in `.env`. Every node, LLM call (with prompt, output, and token counts) and run is traced through OpenInference's LangChain instrumentation. In production, point the same variables at a free Phoenix Cloud space.
 
+## Security notes
+
+Researchers fetch URLs that come from search results, which outsiders can influence, so `backend/app/tools/fetch.py` treats every URL as hostile:
+
+- **SSRF:** http/https only, on ports 80, 443, 8080 and 8443. A hostname is resolved once and must resolve only to public addresses. The request is then sent to that exact IP, with the original hostname kept for the `Host` header and TLS certificate check, so a second, different DNS answer (DNS rebinding) is never used. Redirects are followed by hand and each hop is checked again.
+- **IPv6 tricks:** addresses that wrap an IPv4 address (NAT64, IPv4-mapped) are unwrapped and the inner address is checked. 6to4, Teredo, IPv4-compatible and other tunnel or local ranges are refused.
+- **Size limits:** responses are read raw and capped at 2 MB. gzip/deflate are inflated in bounded steps, so a compression bomb can't use more memory than that, and other encodings are refused. Each fetch also has a 30 s overall time limit.
+- **Rate limiting** trusts `X-Forwarded-For` / `X-Real-IP` only behind a proxy that overwrites them (`TRUST_PROXY_HEADERS`, on by default on Vercel).
+- **Errors** shown to users are fixed messages; exception details stay in server logs.
+
+The tests in `backend/tests/test_security.py` cover each of these cases.
+
 ## Deploy (Vercel)
 
 Two Vercel projects from this one repo:
