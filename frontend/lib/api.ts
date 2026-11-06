@@ -33,5 +33,15 @@ export async function getRun(id: string): Promise<RunDetail> {
   return json(await fetch(`${API_URL}/api/runs/${id}`, { cache: "no-store" }));
 }
 
-export const streamUrl = (id: string) => `${API_URL}/api/runs/${id}/stream`;
+/** Resume a failed run from its last completed step (same run id). */
+export async function continueRun(id: string): Promise<{ id: string }> {
+  return json(await fetch(`${API_URL}/api/runs/${id}/continue`, { method: "POST" }));
+}
+
+/** Start a fresh run with the same question; returns the new run's id. */
+export async function restartRun(id: string): Promise<{ id: string }> {
+  return json(await fetch(`${API_URL}/api/runs/${id}/restart`, { method: "POST" }));
+}
+
+export const streamUrl =(id: string) => `${API_URL}/api/runs/${id}/stream`;
 export const markdownUrl = (id: string) => `${API_URL}/api/runs/${id}/report.md`;

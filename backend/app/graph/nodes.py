@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import httpx
+from langchain_core.runnables import RunnableConfig
 from rapidfuzz import fuzz
 
 from app.config import get_settings
@@ -147,7 +148,19 @@ def _findings_digest(findings: list[Finding]) -> str:
     return "\n".join(lines) or "(no findings yet)"
 
 
-async def critic(state: ResearchState) -> dict:
+def attempt_started_at(state: ResearchState, config: RunnableConfig | None) -> float:
+    """When the current attempt began. A continued run gets a fresh time budget, not the original start."""
+    started = ((config or {}).get("configurable") or {}).get("attempt_started_at")
+    return float(started) if started else state.get("started_at", time.time())
+
+
+def active_seconds(state: ResearchState, config: RunnableConfig | None) -> float:
+    """Time actually spent running: earlier attempts plus this one (pauses between attempts excluded)."""
+    before = float(((config or {}).get("configurable") or {}).get("active_before_s") or 0.0)
+    return before + time.time() - attempt_started_at(state, config)
+
+
+async def critic(state: ResearchState, config: RunnableConfig) -> dict:
     s = get_settings()
     iteration = state.get("iteration", 0) + 1
     emit("critic", "start", f"Reviewing {len(state.get('findings', []))} findings (round {iteration})")
@@ -158,7 +171,7 @@ async def critic(state: ResearchState) -> dict:
         f"FINDINGS:\n{_findings_digest(state.get('findings', []))}",
         run_name="critic",
     )
-    will_revise = should_revise(state, crit, iteration)
+    will_revise = should_revise(state, crit, iteration, attempt_started_at(state, config))
     emit(
         "critic",
         "done",
@@ -172,9 +185,9 @@ async def critic(state: ResearchState) -> dict:
     return {"critiques": [crit], "iteration": iteration, "revise": will_revise}
 
 
-def should_revise(state: ResearchState, crit: Critique, iteration: int) -> bool:
+def should_revise(state: ResearchState, crit: Critique, iteration: int, started_at: float | None = None) -> bool:
     s = get_settings()
-    elapsed = time.time() - state.get("started_at", time.time())
+    elapsed = time.time() - (started_at or state.get("started_at", time.time()))
     # Leave roughly half the budget for verification + writing.
     time_ok = elapsed < s.run_deadline_s * 0.55
     # Small models sometimes say "sufficient" while scoring coverage 3/10; trust the score too.
@@ -248,7 +261,7 @@ def _clean_citations(text: str, valid: set[int]) -> str:
     return _CITE.sub(lambda m: m.group(0) if int(m.group(1)) in valid else "", text)
 
 
-async def writer(state: ResearchState) -> dict:
+async def writer(state: ResearchState, config: RunnableConfig) -> dict:
     s = get_settings()
     verified = state.get("verified", [])
     emit("writer", "start", f"Drafting brief from {len(verified)} verified findings")
@@ -282,7 +295,7 @@ async def writer(state: ResearchState) -> dict:
             "findings": len(state.get("findings", [])),
             "verified": len(verified),
             "revisions": max(0, state.get("iteration", 1) - 1),
-            "seconds": round(time.time() - state.get("started_at", time.time()), 1),
+            "seconds": round(active_seconds(state, config), 1),
         },
     )
     md = render_markdown(report)

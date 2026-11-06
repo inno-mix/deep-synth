@@ -80,6 +80,15 @@ The graph and API tests swap in a scripted fake LLM and fake search, so they run
 
 `make phoenix` starts Arize Phoenix locally. Set `PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006` in `.env`. Every node, LLM call (with prompt, output, and token counts) and run is traced through OpenInference's LangChain instrumentation. In production, point the same variables at a free Phoenix Cloud space.
 
+## When a run fails
+
+- **Automatic retry.** Every agent step retries transient failures twice (after 2 s, then 4 s): a dropped connection, a model server restart, a rate limit, 5xx errors, or an interrupted system call. Bad model output isn't retried automatically, because repeating the same prompt usually repeats the mistake.
+- **Continue.** LangGraph saves a checkpoint after every step: Postgres in production, a SQLite file locally. When a run fails, the brief page offers **Continue from …**, which re-runs only what failed. Finished steps, including researcher lanes that succeeded in parallel with a failed one, are kept. A run can be continued more than once, and the timeline shows each attempt below a "Continued" marker.
+- **Start over.** Runs the same question again as a new brief. The failed run stays in history.
+- **Timing.** A continued run gets a fresh time budget for follow-up research, and the reported duration counts only time spent running, not the pause before you clicked Continue.
+
+API: `POST /api/runs/{id}/continue` (409 if the run hasn't failed or nothing was saved) and `POST /api/runs/{id}/restart`. `GET /api/runs/{id}` reports `resumable` and `resume_from` for failed runs.
+
 ## Security notes
 
 Researchers fetch URLs that come from search results, which outsiders can influence, so `backend/app/tools/fetch.py` treats every URL as hostile:

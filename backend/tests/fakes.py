@@ -44,14 +44,23 @@ class FakeLLM:
     def __init__(self, critic_verdicts=("revise", "sufficient")):
         self.calls: dict[str, int] = {}
         self.verdicts = list(critic_verdicts)
+        self.failures: list[tuple[str, str, BaseException]] = []
 
     delay = 0.0
+
+    def fail_once(self, schema_name: str, exc: BaseException, when: str = "") -> None:
+        """Make the next call for `schema_name` (whose prompt contains `when`) raise `exc`, once."""
+        self.failures.append((schema_name, when, exc))
 
     async def __call__(self, schema, system, user, **_):
         if self.delay:
             await asyncio.sleep(self.delay)
         name = schema.__name__
         self.calls[name] = self.calls.get(name, 0) + 1
+        for i, (fail_name, when, exc) in enumerate(self.failures):
+            if fail_name == name and when in user:
+                del self.failures[i]
+                raise exc
         if schema is ResearchPlan:
             return ResearchPlan(
                 objective="Compare them",

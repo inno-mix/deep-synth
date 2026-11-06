@@ -17,6 +17,7 @@ from fastapi.responses import PlainTextResponse
 from sse_starlette.sse import EventSourceResponse
 
 from app import db, runner
+from app.checkpoints import setup_checkpointer
 from app.config import get_settings
 from app.llm import StructuredOutputError
 from app.schemas import ResearchRequest, RunCreated, RunDetail, RunEvent, RunSummary
@@ -31,6 +32,10 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 async def lifespan(_: FastAPI):
     setup_tracing()
     await db.init_db()
+    try:
+        await setup_checkpointer()
+    except Exception:  # runs still work; they just can't be continued after a failure
+        log.exception("checkpoint store unavailable; failed runs will not be resumable")
     yield
 
 
@@ -89,14 +94,29 @@ def _summary(r: db.Run) -> RunSummary:
     return RunSummary(id=r.id, topic=r.topic, status=r.status, created_at=r.created_at, model=r.model)
 
 
-def _detail(r: db.Run) -> RunDetail:
+def _detail(r: db.Run, resume_from: list[str] | None = None) -> RunDetail:
     return RunDetail(
         **_summary(r).model_dump(),
         report=r.report,
         markdown=r.markdown,
         events=[RunEvent.model_validate(e) for e in r.events],
         error=r.error,
+        resumable=bool(resume_from),
+        resume_from=resume_from or [],
     )
+
+
+def _is_terminal(e: RunEvent | dict) -> bool:
+    node, kind = (e.node, e.kind) if isinstance(e, RunEvent) else (e["node"], e["kind"])
+    return node == "system" and kind in ("done", "error")
+
+
+async def _resume_point(run_id: str) -> list[str]:
+    try:
+        return await runner.resume_point(run_id)
+    except Exception:
+        log.exception("could not read checkpoint for run %s", run_id)
+        return []
 
 
 def _sse(ev: RunEvent) -> dict[str, str]:
@@ -136,7 +156,53 @@ async def get_run(run_id: str) -> RunDetail:
     run = await db.get_run(run_id)
     if not run:
         raise HTTPException(404, "run not found")
-    return _detail(await _reap_if_stale(run))
+    run = await _reap_if_stale(run)
+    return _detail(run, await _resume_point(run.id) if run.status == "error" else None)
+
+
+@app.post("/api/runs/{run_id}/continue", response_model=RunCreated)
+async def continue_run(run_id: str, request: Request) -> RunCreated:
+    """Resume a failed run from its last completed step. Finished steps are kept, not re-run."""
+    run = await db.get_run(run_id)
+    if not run:
+        raise HTTPException(404, "run not found")
+    run = await _reap_if_stale(run)
+    if run.status != "error":
+        raise HTTPException(409, "Only a failed run can be continued.")
+    steps = await _resume_point(run.id)
+    if not steps:
+        raise HTTPException(409, "There's no saved progress to continue from. Start over instead.")
+    _rate_limit(request)
+
+    # Keep the invariant "a terminal system event is always the last event": the old failure
+    # becomes a 'resume' marker that still carries the error text for the timeline.
+    events = list(run.events)
+    if events and _is_terminal(events[-1]) and events[-1]["kind"] == "error":
+        last = events.pop()
+        events.append(
+            {
+                **last,
+                "kind": "resume",
+                "message": "Continued after a failure",
+                "data": {"error": last["message"], "resume_from": steps},
+                "ts": datetime.now(UTC).isoformat(),
+            }
+        )
+    run.events, run.status, run.error = events, "pending", None
+    _live.pop(run.id, None)  # drop any in-memory copy of the failed attempt
+    await db.save_run(run)
+    return RunCreated(id=run.id, status="pending")
+
+
+@app.post("/api/runs/{run_id}/restart", response_model=RunCreated, status_code=201)
+async def restart_run(run_id: str, request: Request) -> RunCreated:
+    """Start a fresh run with the same question. The original run stays in history."""
+    run = await db.get_run(run_id)
+    if not run:
+        raise HTTPException(404, "run not found")
+    if run.status in ("pending", "running"):
+        raise HTTPException(409, "This run is still going.")
+    return await create_run(ResearchRequest(topic=run.topic), request)
 
 
 @app.get("/api/runs/{run_id}/report.md", response_class=PlainTextResponse)
@@ -179,7 +245,9 @@ def _event(events: list[RunEvent], node: str, kind: str, message: str, data: dic
 
 
 async def _execute(run: db.Run) -> None:
-    events = _live.setdefault(run.id, [])
+    # A continued run keeps its earlier events; new ones are appended after them.
+    events = [RunEvent.model_validate(e) for e in run.events]
+    _live[run.id] = events
     lock = asyncio.Lock()
 
     async def flush() -> None:
@@ -196,8 +264,12 @@ async def _execute(run: db.Run) -> None:
     await flush()
     hb = asyncio.create_task(heartbeat())
     try:
+        resume = bool(await runner.resume_point(run.id))
+        active_before = active_seconds(events) if resume else 0.0
         async with asyncio.timeout(get_settings().run_deadline_s + 25):
-            async for raw in runner.run_research(run.topic, run_id=run.id):
+            async for raw in runner.run_research(
+                run.topic, run_id=run.id, resume=resume, active_before_s=active_before
+            ):
                 if raw["kind"] == "result":
                     report = raw["data"]["report"]
                     run.report = report.model_dump(mode="json") if report else None
@@ -209,7 +281,7 @@ async def _execute(run: db.Run) -> None:
         run.status = "done"
         _event(events, "system", "done", "Report ready")
     except asyncio.CancelledError:
-        run.status, run.error = "error", "Run was cancelled because the server shut down. Start it again."
+        run.status, run.error = "error", "Run was cancelled because the server shut down."
         _event(events, "system", "error", run.error)
         raise
     except Exception as e:
@@ -224,12 +296,33 @@ async def _execute(run: db.Run) -> None:
         asyncio.get_running_loop().call_later(120, _live.pop, run.id, None)
 
 
+def active_seconds(events: list[RunEvent]) -> float:
+    """Running time of earlier attempts: each attempt spans from its first event to its last.
+
+    Attempts are separated by 'resume' markers, so the time a failed run sat waiting is not counted.
+    """
+    total, start, last = 0.0, None, None
+    for ev in events:
+        if ev.kind == "resume":
+            if start and last:
+                total += (last - start).total_seconds()
+            start = last = None
+            continue
+        start = start or ev.ts
+        last = ev.ts
+    if start and last:
+        total += (last - start).total_seconds()
+    return total
+
+
 def public_error(e: BaseException, run_id: str) -> str:
     """Map an internal exception to a fixed, user-safe message."""
     if isinstance(e, TimeoutError):
         return "Ran out of time before the brief was written. Try a narrower question."
     if isinstance(e, StructuredOutputError):
-        return "The model kept returning output in the wrong format. Try again or use a larger model."
+        return (
+            "The model kept returning output in the wrong format. Continue to retry that step, or use a larger model."
+        )
     if isinstance(e, httpx.ConnectError | ConnectionError):
         return "Couldn't reach the language model. Check that the model server is running."
     return f"The run failed unexpectedly. Server logs have the details (run {run_id})."
@@ -245,7 +338,7 @@ async def _reap_if_stale(run: db.Run) -> db.Run:
     """Mark runs whose executor died (server restart, frozen instance) as failed instead of hanging."""
     if run.status == "running" and run.id not in _tasks and _age_s(run.updated_at) > STALE_AFTER_S:
         run.status = "error"
-        run.error = "Run was interrupted before finishing (the server stopped). Start it again."
+        run.error = "Run was interrupted before finishing (the server stopped)."
         run.events = [
             *run.events,
             _event([RunEvent.model_validate(e) for e in run.events], "system", "error", run.error).model_dump(
@@ -265,7 +358,7 @@ async def _follow(run_id: str) -> AsyncIterator[dict[str, str]]:
             for ev in events[sent:]:
                 yield _sse(ev)
             sent = len(events)
-            if (task is None or task.done()) and any(e.node == "system" for e in events):
+            if (task is None or task.done()) and events and _is_terminal(events[-1]):
                 return
             await asyncio.sleep(0.3)
             continue
@@ -278,7 +371,7 @@ async def _follow(run_id: str) -> AsyncIterator[dict[str, str]]:
             yield _sse(RunEvent.model_validate(e))
         sent = len(run.events)
         if run.status in ("done", "error"):
-            if not any(e["node"] == "system" for e in run.events):
+            if not (run.events and _is_terminal(run.events[-1])):
                 kind = "done" if run.status == "done" else "error"
                 msg = run.error or "Report ready"
                 yield _sse(RunEvent(seq=sent, node="system", kind=kind, message=msg, ts=datetime.now(UTC)))

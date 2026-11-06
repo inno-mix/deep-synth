@@ -16,7 +16,7 @@ async def main(topic: str, out: Path | None) -> None:
     print(f"▶ {topic}\n  provider={s.llm_provider} model={s.model_name}\n")
     t0 = time.time()
     md = None
-    async for ev in run_research(topic):
+    async for ev in run_research(topic, durable=False):
         if ev["kind"] == "result":
             md = ev["data"]["markdown"]
             continue

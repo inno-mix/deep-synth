@@ -146,7 +146,7 @@ RunStatus = Literal["pending", "running", "done", "error"]
 class RunEvent(BaseModel):
     seq: int
     node: str
-    kind: Literal["start", "progress", "update", "done", "error"]
+    kind: Literal["start", "progress", "update", "done", "error", "resume"]
     message: str
     data: dict[str, Any] = Field(default_factory=dict)
     ts: datetime
@@ -170,3 +170,5 @@ class RunDetail(RunSummary):
     markdown: str | None = None
     events: list[RunEvent] = Field(default_factory=list)
     error: str | None = None
+    resumable: bool = False  # a failed run with saved progress
+    resume_from: list[str] = Field(default_factory=list)  # steps a continue would start with

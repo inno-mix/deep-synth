@@ -9,7 +9,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=(".env", "../.env"), extra="ignore")
+    # Tests set DEEP_SYNTH_IGNORE_DOTENV so a developer's local .env can never change test behaviour.
+    model_config = SettingsConfigDict(
+        env_file=None if os.environ.get("DEEP_SYNTH_IGNORE_DOTENV") else (".env", "../.env"),
+        extra="ignore",
+    )
 
     # --- LLM ---
     llm_provider: Literal["ollama", "google"] = "ollama"

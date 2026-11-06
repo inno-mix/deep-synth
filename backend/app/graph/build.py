@@ -9,8 +9,10 @@ planner ─┬─> researcher x N (parallel, Send API) ─> critic
 
 from functools import cache
 
+import httpx
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Send
+from langgraph.types import RetryPolicy, Send
 
 from app.graph.nodes import critic, planner, researcher, verifier, writer
 from app.graph.state import ResearchState
@@ -38,14 +40,32 @@ def route_after_critic(state: ResearchState) -> list[Send] | str:
     return "verifier"
 
 
-@cache
-def build_graph():
+def is_transient(exc: Exception) -> bool:
+    """Errors worth an automatic retry: dropped connections, timeouts, rate limits, 5xx from the model server,
+    and interrupted system calls (EINTR, e.g. a file read interrupted while a synced folder fetches it).
+
+    Bad model output (StructuredOutputError) and bugs are not retried here; the user can choose to continue.
+    """
+    if isinstance(exc, httpx.TransportError | ConnectionError | InterruptedError):
+        return True
+    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    return isinstance(status, int) and (status == 429 or status >= 500)
+
+
+# Two retries with 2s/4s backoff: enough for an Ollama model reload or a brief network drop.
+RETRY = RetryPolicy(max_attempts=3, initial_interval=2.0, backoff_factor=2.0, retry_on=is_transient)
+
+
+def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     g = StateGraph(ResearchState)
-    g.add_node("planner", planner)
-    g.add_node("researcher", researcher)
-    g.add_node("critic", critic)
-    g.add_node("verifier", verifier)
-    g.add_node("writer", writer)
+    for name, fn in (
+        ("planner", planner),
+        ("researcher", researcher),
+        ("critic", critic),
+        ("verifier", verifier),
+        ("writer", writer),
+    ):
+        g.add_node(name, fn, retry_policy=RETRY)
 
     g.add_edge(START, "planner")
     g.add_conditional_edges("planner", fan_out_plan, ["researcher"])
@@ -53,4 +73,10 @@ def build_graph():
     g.add_conditional_edges("critic", route_after_critic, ["researcher", "verifier"])
     g.add_edge("verifier", "writer")
     g.add_edge("writer", END)
-    return g.compile()
+    return g.compile(checkpointer=checkpointer)
+
+
+@cache
+def build_graph_uncheckpointed():
+    """For drawing the graph and one-off CLI runs."""
+    return build_graph(None)

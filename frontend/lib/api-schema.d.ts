@@ -56,6 +56,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/continue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Continue Run
+         * @description Resume a failed run from its last completed step. Finished steps are kept, not re-run.
+         */
+        post: operations["continue_run_api_runs__run_id__continue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restart Run
+         * @description Start a fresh run with the same question. The original run stays in history.
+         */
+        post: operations["restart_run_api_runs__run_id__restart_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/report.md": {
         parameters: {
             query?: never;
@@ -82,10 +122,11 @@ export interface paths {
         };
         /**
          * Stream Run
-         * @description Executes the run on first connect (serverless-friendly: the work happens inside the request).
+         * @description Start the run on first connect, then follow it.
          *
-         *     Later connections replay stored events and follow progress by polling the DB, so a page
-         *     refresh or a second tab works even when it lands on a different function instance.
+         *     The graph runs as a background task, not inside this request, so closing the tab does not
+         *     cancel it. Every connection (first, refresh, second tab) follows the same way: from memory
+         *     when the task lives on this instance, otherwise by polling the database.
          */
         get: operations["stream_run_api_runs__run_id__stream_get"];
         put?: never;
@@ -213,6 +254,13 @@ export interface components {
             events?: components["schemas"]["RunEvent"][];
             /** Error */
             error?: string | null;
+            /**
+             * Resumable
+             * @default false
+             */
+            resumable: boolean;
+            /** Resume From */
+            resume_from?: string[];
         };
         /** RunEvent */
         RunEvent: {
@@ -224,7 +272,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "start" | "progress" | "update" | "done" | "error";
+            kind: "start" | "progress" | "update" | "done" | "error" | "resume";
             /** Message */
             message: string;
             /** Data */
@@ -371,6 +419,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    continue_run_api_runs__run_id__continue_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunCreated"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restart_run_api_runs__run_id__restart_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunCreated"];
                 };
             };
             /** @description Validation Error */

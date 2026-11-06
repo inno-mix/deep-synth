@@ -98,6 +98,18 @@ body {
   background: var(--rejected);
   border-color: var(--rejected);
 }
+/* Continue marker: hollow ring in the signal colour, so it reads as a restart point, not a step */
+.node-dot[data-state="resume"] {
+  background: var(--ground);
+  border-color: var(--signal);
+  border-style: dashed;
+}
+.lane[data-state="error"]::before {
+  border-color: var(--rejected);
+}
+.lane[data-state="error"] .lane-dot {
+  background: var(--rejected);
+}
 /* Branches: each lane hangs off the trunk with an elbow connector. */
 .lanes {
   position: relative;

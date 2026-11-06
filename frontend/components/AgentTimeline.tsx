@@ -1,5 +1,5 @@
 import type { Fan, Stage, Step } from "@/lib/timeline";
-import { NODE_LABEL } from "@/lib/timeline";
+import { NODE_LABEL, RESUME_LABEL } from "@/lib/timeline";
 
 export function AgentTimeline({ stages, finished }: { stages: Stage[]; finished: boolean }) {
   return (
@@ -17,7 +17,9 @@ export function AgentTimeline({ stages, finished }: { stages: Stage[]; finished:
 
 function StepRow({ step }: { step: Step }) {
   const d = step.data as Record<string, unknown>;
-  const title = step.node === "critic" ? `Critic, round ${step.round}` : NODE_LABEL[step.node];
+  if (step.node === "resume") return <ResumeMarker d={d} />;
+  const title =
+    step.node === "critic" ? `Critic, round ${step.round}` : step.node === "system" ? "Run stopped" : NODE_LABEL[step.node];
   return (
     <li className="relative">
       <span className="node-dot" data-state={step.state} aria-hidden />
@@ -25,6 +27,18 @@ function StepRow({ step }: { step: Step }) {
       <p className={`text-sm ${step.state === "error" ? "text-rejected" : "text-ink-soft"}`}>{step.message}</p>
       {step.node === "critic" && step.state === "done" && <CriticDetail d={d} />}
       {step.node === "verifier" && step.state === "done" && <VerifierDetail d={d} />}
+    </li>
+  );
+}
+
+/** Where an earlier attempt failed and the run was continued. Rows below it are the new attempt. */
+function ResumeMarker({ d }: { d: Record<string, unknown> }) {
+  const from = ((d.resume_from as string[]) ?? []).map((n) => RESUME_LABEL[n] ?? n);
+  return (
+    <li className="relative resume-marker">
+      <span className="node-dot" data-state="resume" aria-hidden />
+      <p className="font-medium text-ink">Continued{from.length > 0 && ` from ${from.join(" and ")}`}</p>
+      {typeof d.error === "string" && <p className="text-sm text-ink-faint">Earlier attempt stopped: {d.error}</p>}
     </li>
   );
 }
@@ -77,6 +91,7 @@ function FanOut({ fan }: { fan: Fan }) {
       <span className="node-dot" data-state={active ? "active" : "done"} aria-hidden />
       <p className="font-medium text-ink">
         {fan.round === 0 ? "Researchers" : "Follow-up research"}
+        {fan.retry && ", retried"}
         <span className="text-ink-faint font-normal"> ({fan.lanes.length} in parallel)</span>
       </p>
       <ul className="lanes mt-2 space-y-3">

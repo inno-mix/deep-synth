@@ -6,12 +6,25 @@ import { buildTimeline } from "@/lib/timeline";
 import type { RunDetail, RunEvent } from "@/lib/types";
 import { AgentTimeline } from "./AgentTimeline";
 import { ReportView } from "./ReportView";
+import { RunRecovery } from "./RunRecovery";
+
+const isTerminal = (ev: RunEvent) => ev.node === "system" && (ev.kind === "done" || ev.kind === "error");
+
+/** Insert or replace by seq: a continued run rewrites its old failure event into a resume marker. */
+function merge(prev: RunEvent[], ev: RunEvent): RunEvent[] {
+  const i = prev.findIndex((p) => p.seq === ev.seq);
+  if (i === -1) return [...prev, ev].sort((a, b) => a.seq - b.seq);
+  const next = prev.slice();
+  next[i] = ev;
+  return next;
+}
 
 export function RunView({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [run, setRun] = useState<RunDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0); // bumped by Continue to reconnect to the same run
 
   useEffect(() => {
     let source: EventSource | null = null;
@@ -21,16 +34,14 @@ export function RunView({ params }: { params: Promise<{ id: string }> }) {
       .then((detail) => {
         if (cancelled) return;
         setRun(detail);
-        if (detail.status === "done" || detail.status === "error") {
-          setEvents(detail.events ?? []);
-          return;
-        }
-        // Pending: this connection executes the graph. Running: it replays and follows.
+        setEvents(detail.events ?? []);
+        if (detail.status === "done" || detail.status === "error") return;
+        // Pending: connecting starts the run. Running: the stream replays from the start and follows.
         source = new EventSource(streamUrl(id));
         source.addEventListener("agent", (msg) => {
           const ev = JSON.parse((msg as MessageEvent).data) as RunEvent;
-          setEvents((prev) => (prev.some((p) => p.seq === ev.seq) ? prev : [...prev, ev]));
-          if (ev.node === "system") {
+          setEvents((prev) => merge(prev, ev));
+          if (isTerminal(ev)) {
             source?.close();
             getRun(id).then((d) => !cancelled && setRun(d));
           }
@@ -46,10 +57,11 @@ export function RunView({ params }: { params: Promise<{ id: string }> }) {
       cancelled = true;
       source?.close();
     };
-  }, [id]);
+  }, [id, attempt]);
 
   const stages = useMemo(() => buildTimeline(events), [events]);
-  const failed = run?.status === "error" || events.some((e) => e.node === "system" && e.kind === "error");
+  const last = events.at(-1);
+  const failed = run?.status === "error" || (last !== undefined && isTerminal(last) && last.kind === "error");
 
   if (error && !run) return <p className="pt-16 text-rejected">{error}</p>;
   if (!run) return <p className="pt-16 text-ink-faint">Loading run…</p>;
@@ -67,14 +79,14 @@ export function RunView({ params }: { params: Promise<{ id: string }> }) {
         <section aria-live="polite">
           {run.report ? (
             <ReportView report={run.report} downloadHref={markdownUrl(id)} />
-          ) : failed ? (
-            <div className="border-l-2 border-rejected pl-4">
-              <p className="font-medium text-rejected">The run stopped before writing a brief.</p>
-              <p className="mt-1 text-sm text-ink-soft">{run.error ?? events.at(-1)?.message}</p>
-              <p className="mt-3 text-sm text-ink-soft">
-                Check that the model server is running, then start the question again from the home page.
-              </p>
-            </div>
+          ) : failed && run.status === "error" ? (
+            <RunRecovery
+              run={run}
+              onContinued={() => {
+                setError(null);
+                setAttempt((n) => n + 1);
+              }}
+            />
           ) : (
             <Waiting stageCount={stages.length} />
           )}
