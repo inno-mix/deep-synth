@@ -6,6 +6,43 @@ It costs nothing to develop: the whole loop runs on a local 7B model through Oll
 
 Real outputs, produced entirely locally by `qwen2.5:7b` using DuckDuckGo search: [pgvector vs Qdrant](docs/sample-report-ollama.md) and [SQLite for multi-tenant SaaS](docs/sample-report-sqlite.md).
 
+## Screenshots
+
+Every screenshot below comes from a real local run on an 8 GB M1 with `qwen2.5:7b`; none are mock-ups.
+
+**Ask a question.** Earlier briefs are kept in history.
+
+![Home page](docs/screenshots/01-home.png)
+
+**Watch the agents work.** The planner splits the question, and four researchers read the web in parallel. Each lane shows its findings and the domains it read.
+
+![Live research timeline](docs/screenshots/02-live-research.png)
+
+**Get a brief you can check.** It includes a TL;DR, comparison tables, inline citations, and a verifier bar showing how many quotes matched their source text. It downloads as Markdown.
+
+![Finished brief](docs/screenshots/03-report.png)
+
+**Recover from failures.** This run hit its time limit while writing. **Continue from writing** re-runs only the failed step from the LangGraph checkpoint. The finished brief above is that same run, continued, with a marker on its timeline.
+
+![Failed run with Continue and Start over](docs/screenshots/04-failed-run-recovery.png)
+
+<details>
+<summary>Dark mode, mobile, and API docs</summary>
+
+| Dark mode | |
+|---|---|
+| ![Home, dark](docs/screenshots/05-home-dark.png) | ![Brief, dark](docs/screenshots/06-report-dark.png) |
+
+| Mobile: home | Mobile: timeline | Mobile: brief |
+|---|---|---|
+| ![Mobile home](docs/screenshots/07-mobile-home.png) | ![Mobile timeline](docs/screenshots/08-mobile-report.png) | ![Mobile brief](docs/screenshots/09-mobile-brief.png) |
+
+FastAPI's generated OpenAPI docs (`/docs`). The frontend types are generated from the same schema.
+
+![API docs](docs/screenshots/10-api-docs.png)
+
+</details>
+
 ## Architecture
 
 ```mermaid
